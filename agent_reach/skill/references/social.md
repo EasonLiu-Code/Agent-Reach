@@ -63,7 +63,102 @@ xhs feed                    # 推荐
 >
 > **写操作（发帖/评论/点赞）**: 建议只读。xhs-cli v0.6.x 写操作可能因签名问题返回 406。
 
-## Twitter/X (twitter-cli)
+## Twitter/X（多后端）
+
+Twitter/X 有多个后端，**先跑 `agent-reach doctor --json` 看 twitter 的
+`active_backend` 是哪个**，再用对应命令组。
+
+### 后端 A：X MCP（mcporter，优先）
+
+如果用户已把 X/Twitter MCP 接到 mcporter，doctor 会显示
+`active_backend: "X MCP (mcporter)"`。MCP server 名通常配置为 `twitter`
+或 `x`，工具名以实际 server 暴露的 schema 为准。
+
+```bash
+# 查看已配置的 MCP server 名
+mcporter config list
+
+# 调用示例：把 <tool> / 参数替换成该 X MCP server 暴露的真实工具
+mcporter call 'twitter.<tool>(...)'
+mcporter call 'x.<tool>(...)'
+```
+
+> 不要硬猜工具名。先看 `mcporter config list` 和 MCP server 文档/工具列表；
+> 一旦确认 schema，再用 `mcporter call 'server.tool(...)'` 调用。
+
+#### 配置 XActions 作为 X MCP server（推荐方案）
+
+[XActions](https://github.com/nirholas/XActions) 是 140+ 工具的开源 X/Twitter MCP server，**零 Twitter API Key**，只需浏览器登录态的 `auth_token` cookie。适合所有用户开箱即用。
+
+**Step 1：获取 auth_token cookie**
+
+三种方式任选其一：
+
+| 方式 | 步骤 | 适用 |
+|---|---|---|
+| **A. Cookie-Editor 扩展**（推荐） | 1. 装 [Cookie-Editor](https://chromewebstore.google.com/detail/cookie-editor/hlkenndednhfkekhgcdicdfddnkalmdm) Chrome 扩展<br>2. Chrome 访问 https://x.com 并登录<br>3. 点扩展图标 → 找 `auth_token` 行 → Export → Header String | 桌面用户 |
+| **B. DevTools 手动复制** | 1. Chrome 打开 https://x.com（已登录）<br>2. `Cmd+Option+I` 打开 DevTools<br>3. `Application` → `Cookies` → `https://x.com`<br>4. 双击 `auth_token` 的 Value 列，全选复制 | 桌面用户，不想装扩展 |
+| **C. xactions CLI 交互登录** | `npx xactions login` 按提示操作 | 任意环境 |
+
+> ⚠️ `auth_token` 等同于账号密码，泄露后他人可完全控制你的 Twitter 账号。建议用小号。
+
+**Step 2：注册到 mcporter**
+
+```bash
+mcporter config add twitter \
+  --command npx \
+  --arg "-y" \
+  --arg "xactions-mcp" \
+  --env XACTIONS_SESSION_COOKIE=你的auth_token值 \
+  --transport stdio
+```
+
+**Step 3：验证 agent-reach 识别到 X MCP 后端**
+
+```bash
+agent-reach doctor | grep -A1 "Twitter"
+# 预期：✅ Twitter/X 推文 — X MCP (mcporter) 可用（当前后端：X MCP (mcporter)）
+
+mcporter config list
+# 预期：显示 twitter server
+```
+
+**Step 4：调用**
+
+```bash
+# 搜推文
+mcporter call 'twitter.x_search_tweets(query: "AI agent", count: 5)'
+
+# 看 profile
+mcporter call 'twitter.x_get_profile(username: "elonmusk")'
+
+# 拉用户最近推文
+mcporter call 'twitter.x_get_tweets(username: "elonmusk", limit: 20)'
+
+# 展开完整推文串
+mcporter call 'twitter.x_get_thread(tweet_url: "https://x.com/...")'
+```
+
+> **可选：AI 工具**（如 `x_analyze_voice` / `x_generate_tweet` / `x_summarize_thread`）需要额外配 `OPENROUTER_API_KEY`：
+> ```bash
+> mcporter config remove twitter   # 删旧配置
+> mcporter config add twitter \
+>   --command npx --arg "-y" --arg "xactions-mcp" \
+>   --env XACTIONS_SESSION_COOKIE=你的auth_token \
+>   --env OPENROUTER_API_KEY=你的openrouter_key \
+>   --transport stdio
+> ```
+> 免费 OpenRouter Key：https://openrouter.ai
+
+> **故障排查**：
+> - `npx xactions-mcp` 404 → 改用 `npx -p xactions xactions-mcp`
+> - 工具列表为空 → 确认 Node.js 18+：`node --version`
+> - 操作类工具（post/follow/like）失败 → 检查 `XACTIONS_SESSION_COOKIE` 是否正确
+> - 想换账号 → `mcporter config remove twitter` 后重新 Step 2
+
+> **完整工具列表**：https://github.com/nirholas/XActions#available-tools
+
+### 后端 B：twitter-cli
 
 ### 稳定命令
 
@@ -96,10 +191,11 @@ twitter likes
 
 ### search 失败时的重试链（按序执行，成功即停）
 
-1. 直接重试一次（偶发失败常见）：`twitter search "query" -n 10`
-2. 升级后再试：`pipx upgrade twitter-cli && twitter search "query" -n 10`
-3. 换 OpenCLI 备选（桌面，复用浏览器登录态）：`opencli twitter search "query" -f yaml`
-4. 都不行就改用 `twitter feed` / `twitter user-posts @somebody` 等稳定命令绕路
+1. 如果 doctor 显示 X MCP 可用，优先改走 X MCP 对应搜索工具
+2. 直接重试一次（偶发失败常见）：`twitter search "query" -n 10`
+3. 升级后再试：`pipx upgrade twitter-cli && twitter search "query" -n 10`
+4. 换 OpenCLI 备选（桌面，复用浏览器登录态）：`opencli twitter search "query" -f yaml`
+5. 都不行就改用 `twitter feed` / `twitter user-posts @somebody` 等稳定命令绕路
 
 ### 重要注意事项
 
