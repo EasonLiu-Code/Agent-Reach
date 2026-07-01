@@ -1,14 +1,30 @@
 # -*- coding: utf-8 -*-
-"""Twitter/X — check if twitter-cli or bird CLI is available."""
+"""Twitter/X — check if X MCP, twitter-cli, or bird CLI is available."""
 
 from .base import Channel
 from agent_reach.probe import probe_command
 
 
+_MCPORTER_BROKEN_HINT = "mcporter 无法执行（node 环境损坏），重装：\n  npm install -g mcporter"
+_X_MCP_NAMES = ("twitter", "x")
+
+
+def _has_x_mcp_server(output: str) -> str | None:
+    """Return the configured mcporter server name for Twitter/X, if present."""
+    for raw_line in output.splitlines():
+        line = raw_line.strip().lower()
+        if not line or line.startswith(("no ", "other ", "project ", "system ", "use ")):
+            continue
+        token = line.split()[0].strip("-*•:[]")
+        if token in _X_MCP_NAMES:
+            return token
+    return None
+
+
 class TwitterChannel(Channel):
     name = "twitter"
     description = "Twitter/X 推文"
-    backends = ["twitter-cli", "OpenCLI", "bird CLI (legacy)"]
+    backends = ["X MCP (mcporter)", "twitter-cli", "OpenCLI", "bird CLI (legacy)"]
     tier = 1
 
     def can_handle(self, url: str) -> bool:
@@ -27,7 +43,9 @@ class TwitterChannel(Channel):
         findings = []
 
         for backend in self.ordered_backends(config):
-            if backend == "twitter-cli":
+            if backend == "X MCP (mcporter)":
+                result = self._check_x_mcp()
+            elif backend == "twitter-cli":
                 result = self._check_twitter_cli()
             elif backend == "OpenCLI":
                 result = self._check_opencli()
@@ -51,9 +69,35 @@ class TwitterChannel(Channel):
 
         return "warn", (
             "Twitter CLI 未安装。安装方式：\n"
+            "  mcporter config add twitter <X_MCP_ENDPOINT>\n"
+            "或：\n"
             "  pipx install twitter-cli\n"
             "或：\n"
             "  uv tool install twitter-cli"
+        )
+
+    def _check_x_mcp(self):
+        """Probe a configured X/Twitter MCP server via mcporter."""
+        probe = probe_command(
+            "mcporter", ["config", "list"], timeout=10, retries=1, package="mcporter"
+        )
+        if probe.status == "missing":
+            return None
+        if probe.status == "broken":
+            return "error", _MCPORTER_BROKEN_HINT
+        if probe.status == "timeout":
+            return "error", "mcporter 健康检查超时（已重试 1 次）。\n" + probe.hint
+        if not probe.ok:
+            return "error", f"mcporter 执行异常：{probe.hint or probe.output or probe.status}"
+
+        server_name = _has_x_mcp_server(probe.output)
+        if not server_name:
+            return None
+
+        return "ok", (
+            f"X MCP 已通过 mcporter 配置为 `{server_name}`。"
+            "按该 MCP server 暴露的工具名调用，例如："
+            f"mcporter call '{server_name}.<tool>(...)'"
         )
 
     def _check_twitter_cli(self):
